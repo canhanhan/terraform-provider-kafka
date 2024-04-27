@@ -37,10 +37,21 @@ func kafkaTopicResource() *schema.Resource {
 			},
 			"replication_factor": {
 				Type:         schema.TypeInt,
-				Required:     true,
+				Required:     false,
+				Optional:     true,
 				ForceNew:     false,
+				Default:      -1,
+				ExactlyOneOf: []string{"replication_factor", "replica_placement"},
 				Description:  "Number of replicas.",
 				ValidateFunc: validation.IntAtLeast(1),
+			},
+			"replica_placement": {
+				Type:         schema.TypeString,
+				Required:     false,
+				Optional:     true,
+				ForceNew:     false,
+				Description:  "Replica placement strategy.",
+				ValidateFunc: validation.StringIsJSON,
 			},
 			"config": {
 				Type:        schema.TypeMap,
@@ -101,8 +112,11 @@ func topicUpdate(ctx context.Context, d *schema.ResourceData, meta interface{}) 
 		return diag.FromErr(err)
 	}
 
-	// update replica count of existing partitions before adding new ones
-	if d.HasChange("replication_factor") {
+	_, ok := t.Config["confluent.placement.constraints"]
+	if ok {
+		log.Printf("[TRACE] Topic %s has placement constraints. Ignoring replication factor.", t.Name)
+	} else if d.HasChange("replication_factor") {
+		// update replica count of existing partitions before adding new ones
 		oi, ni := d.GetChange("replication_factor")
 		oldRF := oi.(int)
 		newRF := ni.(int)
@@ -270,10 +284,18 @@ func topicRead(ctx context.Context, d *schema.ResourceData, meta interface{}) di
 	}
 
 	log.Printf("[DEBUG] Setting the state from Kafka %v", topic)
+
 	errSet := errSetter{d: d}
 	errSet.Set("name", topic.Name)
 	errSet.Set("partitions", topic.Partitions)
 	errSet.Set("replication_factor", topic.ReplicationFactor)
+
+	replicaPlacement, ok := topic.Config["confluent.placement.constraints"]
+	if ok {
+		delete(topic.Config, "confluent.placement.constraints")
+		errSet.Set("replica_placement", replicaPlacement)
+	}
+
 	errSet.Set("config", topic.Config)
 
 	if errSet.err != nil {
