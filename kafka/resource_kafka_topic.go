@@ -37,10 +37,12 @@ func kafkaTopicResource() *schema.Resource {
 			},
 			"replication_factor": {
 				Type:         schema.TypeInt,
-				Required:     true,
+				Required:     false,
+				Optional:     true,
 				ForceNew:     false,
+				Default:      -1,
 				Description:  "Number of replicas.",
-				ValidateFunc: validation.IntAtLeast(1),
+				ValidateFunc: validation.All(validation.NoZeroValues, validation.IntAtLeast(-1)),
 			},
 			"config": {
 				Type:        schema.TypeMap,
@@ -101,8 +103,18 @@ func topicUpdate(ctx context.Context, d *schema.ResourceData, meta interface{}) 
 		return diag.FromErr(err)
 	}
 
+	// replica count cannot be updated if placement constraints are set
+	hasPlacementConstraints := false
+	if ci, ok := d.GetOk("config"); ok {
+		cm := ci.(map[string]interface{})
+		if _, ok := cm["confluent.placement.constraints"]; ok {
+			log.Printf("[INFO] Topic has placement constraints.")
+			hasPlacementConstraints = true
+		}
+	}
+
 	// update replica count of existing partitions before adding new ones
-	if d.HasChange("replication_factor") {
+	if !hasPlacementConstraints && d.HasChange("replication_factor") {
 		oi, ni := d.GetChange("replication_factor")
 		oldRF := oi.(int)
 		newRF := ni.(int)
@@ -302,8 +314,22 @@ func customDiff(ctx context.Context, diff *schema.ResourceDiff, v interface{}) e
 		}
 	}
 
-	if diff.HasChange("replication_factor") {
+	if diff.HasChanges("replication_factor", "config") {
 		log.Printf("[INFO] Checking the diff!")
+
+		config := diff.Get("config").(map[string]interface{})
+		replicationFactor := diff.Get("replication_factor").(int)
+
+		if _, ok := config["confluent.placement.constraints"]; ok {
+			if replicationFactor != -1 {
+				return fmt.Errorf("Cannot set replication_factor when confluent.placement.constraints config is set")
+			}
+		} else {
+			if replicationFactor == -1 {
+				return fmt.Errorf("replication_factor must be set when confluent.placement.constraints config is not set")
+			}
+		}
+
 		client := v.(*LazyClient)
 
 		canAlterRF, err := client.CanAlterReplicationFactor()

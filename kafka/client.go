@@ -537,18 +537,22 @@ func (client *Client) ReadTopic(name string, refreshMetadata bool) (Topic, error
 			log.Printf("[DEBUG] [%s] %d Partitions Found: %v from Kafka", name, partitionCount, p)
 			topic.Partitions = partitionCount
 
-			r, err := ReplicaCount(c, name, p)
-			if err != nil {
-				return topic, err
-			}
-
-			log.Printf("[DEBUG] [%s] ReplicationFactor %d from Kafka", name, r)
-			topic.ReplicationFactor = int16(r)
-
 			configToSave, err := client.topicConfig(name)
 			if err != nil {
 				log.Printf("[ERROR] [%s] Could not get config for topic %s", name, err)
 				return topic, err
+			}
+
+			if _, ok := configToSave["confluent.placement.constraints"]; ok {
+				topic.ReplicationFactor = -1
+			} else {
+				r, err := ReplicaCount(c, name, p)
+				if err != nil {
+					return topic, err
+				}
+
+				log.Printf("[DEBUG] [%s] ReplicationFactor %d from Kafka", name, r)
+				topic.ReplicationFactor = int16(r)
 			}
 
 			log.Printf("[TRACE] [%s] Config %v from Kafka", name, strPtrMapToStrMap(configToSave))
