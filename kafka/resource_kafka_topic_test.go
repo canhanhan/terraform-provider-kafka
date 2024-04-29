@@ -35,6 +35,27 @@ func TestAcc_BasicTopic(t *testing.T) {
 	})
 }
 
+func TestAcc_BasicTopicWithPlacementConstraints(t *testing.T) {
+	t.Parallel()
+	u, err := uuid.GenerateUUID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	topicName := fmt.Sprintf("syslog-%s", u)
+	bs := testBootstrapServers[0]
+	r.Test(t, r.TestCase{
+		ProviderFactories: overrideProviderFactory(),
+		PreCheck:          func() { testAccPreCheck(t) },
+		CheckDestroy:      testAccCheckTopicDestroy,
+		Steps: []r.TestStep{
+			{
+				Config: cfg(t, bs, fmt.Sprintf(testResourceTopic_placementConstraint, topicName, 1, 1)),
+				Check:  testResourceTopic_placementConstraintCheck,
+			},
+		},
+	})
+}
+
 func TestAcc_TopicConfigUpdate(t *testing.T) {
 	t.Parallel()
 	u, err := uuid.GenerateUUID()
@@ -175,6 +196,84 @@ func TestAcc_TopicAlterReplicationFactor(t *testing.T) {
 	})
 }
 
+func TestAcc_TopicAlterBetweenReplicationFactorAndPlacementPolicy(t *testing.T) {
+	t.Parallel()
+	u, err := uuid.GenerateUUID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	topicName := fmt.Sprintf("syslog-%s", u)
+	bs := testBootstrapServers[0]
+
+	keyEncoder := sarama.StringEncoder("same key -> same partition -> same ordering")
+	messages := []*sarama.ProducerMessage{
+		{
+			Topic: topicName,
+			Key:   keyEncoder,
+			Value: sarama.StringEncoder("Krusty"),
+		},
+		{
+			Topic: topicName,
+			Key:   keyEncoder,
+			Value: sarama.StringEncoder("Krab"),
+		},
+		{
+			Topic: topicName,
+			Key:   keyEncoder,
+			Value: sarama.StringEncoder("Pizza"),
+		},
+	}
+
+	r.Test(t, r.TestCase{
+		ProviderFactories: overrideProviderFactory(),
+		PreCheck:          func() { testAccPreCheck(t) },
+		CheckDestroy:      testAccCheckTopicDestroy,
+		Steps: []r.TestStep{
+			{
+				Config: cfg(t, bs, fmt.Sprintf(testResourceTopic_updateRF, topicName, 1, 3)),
+				Check: r.ComposeTestCheckFunc(
+					testResourceTopic_produceMessages(messages),
+					testResourceTopic_initialCheck),
+			},
+			{
+				// Test altering from replication factor to placement policy with same values
+				Config: cfg(t, bs, fmt.Sprintf(testResourceTopic_placementConstraint, topicName, 1, 3)),
+				Check: r.ComposeTestCheckFunc(
+					testResourceTopic_placementConstraintCheck,
+					testResourceTopic_checkSameMessages(messages)),
+			},
+			{
+				// Test updating from placement policy and partitions
+				Config: cfg(t, bs, fmt.Sprintf(testResourceTopic_placementConstraint, topicName, 2, 4)),
+				Check: r.ComposeTestCheckFunc(
+					testResourceTopic_placementConstraintCheck,
+					testResourceTopic_checkSameMessages(messages)),
+			},
+			{
+				// Test altering from placement policy to replication factor with same policies
+				Config: cfg(t, bs, fmt.Sprintf(testResourceTopic_updateRF, topicName, 2, 4)),
+				Check: r.ComposeTestCheckFunc(
+					testResourceTopic_updateRFCheck,
+					testResourceTopic_checkSameMessages(messages)),
+			},
+			{
+				// Test altering from replication factor to placement policy with different values
+				Config: cfg(t, bs, fmt.Sprintf(testResourceTopic_placementConstraint, topicName, 1, 5)),
+				Check: r.ComposeTestCheckFunc(
+					testResourceTopic_placementConstraintCheck,
+					testResourceTopic_checkSameMessages(messages)),
+			},
+			{
+				// Test altering from placement policy to replication factor with different values
+				Config: cfg(t, bs, fmt.Sprintf(testResourceTopic_updateRF, topicName, 2, 6)),
+				Check: r.ComposeTestCheckFunc(
+					testResourceTopic_updateRFCheck,
+					testResourceTopic_checkSameMessages(messages)),
+			},
+		},
+	})
+}
+
 func testResourceTopic_noConfigCheck(s *terraform.State) error {
 	resourceState := s.Modules[0].Resources["kafka_topic.test"]
 	if resourceState == nil {
@@ -201,6 +300,41 @@ func testResourceTopic_noConfigCheck(s *terraform.State) error {
 
 	if len(topic.Config) != 0 {
 		return fmt.Errorf("expected no configs for %s, got %v", name, topic.Config)
+	}
+
+	return nil
+}
+
+func testResourceTopic_placementConstraintCheck(s *terraform.State) error {
+	resourceState := s.Modules[0].Resources["kafka_topic.test"]
+	if resourceState == nil {
+		return fmt.Errorf("resource not found in state")
+	}
+
+	instanceState := resourceState.Primary
+	if instanceState == nil {
+		return fmt.Errorf("resource has no primary instance")
+	}
+
+	name := instanceState.ID
+
+	if name != instanceState.Attributes["name"] {
+		return fmt.Errorf("id doesn't match name")
+	}
+
+	client := testProvider.Meta().(*LazyClient)
+	topic, err := client.ReadTopic(name, true)
+
+	if err != nil {
+		return err
+	}
+
+	if v, ok := topic.Config["confluent.placement.constraints"]; !ok || *v == "" {
+		return fmt.Errorf("confluent.placement.constraints did get set but got: %v", topic.Config)
+	}
+
+	if topic.ReplicationFactor != -1 {
+		return fmt.Errorf("expected replication_factor to be -1 got: %d", topic.ReplicationFactor)
 	}
 
 	return nil
@@ -455,6 +589,17 @@ resource "kafka_topic" "test" {
   name               = "%s"
   replication_factor = 1
   partitions         = 1
+}
+`
+
+const testResourceTopic_placementConstraint = `
+resource "kafka_topic" "test" {
+  name               = "%s"
+  config = {
+	"confluent.placement.constraints" = "{\"version\":1, \"replicas\": [{\"count\":%d}],\"observers\":[]}"
+  }
+
+  partitions         = %d
 }
 `
 
