@@ -553,7 +553,6 @@ func (client *Client) ReadTopic(name string, refreshMetadata bool) (Topic, error
 
 			log.Printf("[TRACE] [%s] Config %v from Kafka", name, strPtrMapToStrMap(configToSave))
 			topic.Config = configToSave
-
 			return topic, nil
 		}
 	}
