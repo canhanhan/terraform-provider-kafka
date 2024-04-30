@@ -81,11 +81,6 @@ func metaToTopic(d *schema.ResourceData, meta interface{}) Topic {
 		}
 	}
 
-	replicaPlacement, ok := d.Get("replica_placement").(string)
-	if ok {
-		m2["confluent.placement.constraints"] = &replicaPlacement
-	}
-
 	return Topic{
 		Name:              topicName,
 		Partitions:        convertedPartitions,

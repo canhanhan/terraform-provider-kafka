@@ -37,21 +37,18 @@ func kafkaTopicResource() *schema.Resource {
 			},
 			"replication_factor": {
 				Type:         schema.TypeInt,
-				Required:     false,
-				Optional:     true,
+				Required:     true,
 				ForceNew:     false,
-				Default:      -1,
-				ExactlyOneOf: []string{"replication_factor", "replica_placement"},
 				Description:  "Number of replicas.",
 				ValidateFunc: validation.IntAtLeast(1),
 			},
-			"replica_placement": {
-				Type:         schema.TypeString,
-				Required:     false,
-				Optional:     true,
-				ForceNew:     false,
-				Description:  "Replica placement strategy.",
-				ValidateFunc: validation.StringIsJSON,
+			"managed_replication_factor": {
+				Type:        schema.TypeBool,
+				Required:    false,
+				Optional:    true,
+				ForceNew:    false,
+				Default:     false,
+				Description: "Ignore replication factor.",
 			},
 			"config": {
 				Type:        schema.TypeMap,
@@ -112,10 +109,13 @@ func topicUpdate(ctx context.Context, d *schema.ResourceData, meta interface{}) 
 		return diag.FromErr(err)
 	}
 
-	_, ok := t.Config["confluent.placement.constraints"]
-	if ok {
-		log.Printf("[TRACE] Topic %s has placement constraints. Ignoring replication factor.", t.Name)
-	} else if d.HasChange("replication_factor") {
+	managed_replication_factor := false
+	if mrfi, ok := d.GetOk("managed_replication_factor"); !ok || !mrfi.(bool) {
+		log.Printf("[INFO] Ignoring replication factor")
+		managed_replication_factor = true
+	}
+
+	if !managed_replication_factor && d.HasChange("replication_factor") {
 		// update replica count of existing partitions before adding new ones
 		oi, ni := d.GetChange("replication_factor")
 		oldRF := oi.(int)
@@ -289,12 +289,7 @@ func topicRead(ctx context.Context, d *schema.ResourceData, meta interface{}) di
 	errSet.Set("name", topic.Name)
 	errSet.Set("partitions", topic.Partitions)
 	errSet.Set("replication_factor", topic.ReplicationFactor)
-
-	replicaPlacement, ok := topic.Config["confluent.placement.constraints"]
-	if ok {
-		delete(topic.Config, "confluent.placement.constraints")
-		errSet.Set("replica_placement", replicaPlacement)
-	}
+	errSet.Set("managed_replication_factor", d.Get("managed_replication_factor"))
 
 	errSet.Set("config", topic.Config)
 
@@ -324,7 +319,12 @@ func customDiff(ctx context.Context, diff *schema.ResourceDiff, v interface{}) e
 		}
 	}
 
-	if diff.HasChange("replication_factor") {
+	managed_replication_factor := false
+	if mrfi, ok := diff.GetOk("managed_replication_factor"); !ok || !mrfi.(bool) {
+		managed_replication_factor = true
+	}
+
+	if !managed_replication_factor && diff.HasChange("replication_factor") {
 		log.Printf("[INFO] Checking the diff!")
 		client := v.(*LazyClient)
 

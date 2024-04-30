@@ -290,18 +290,11 @@ func (c *Client) CreateTopic(t Topic) error {
 	timeout := time.Duration(c.config.Timeout) * time.Second
 	log.Printf("[TRACE] Timeout is %v ", timeout)
 
-	replicationFactor := t.ReplicationFactor
-	val, ok := t.Config["confluent.placement.constraints"]
-	if ok {
-		log.Printf("[TRACE] Creating topic %s with placement constraints %s", t.Name, *val)
-		replicationFactor = -1 // -1 means use placement constraints
-	}
-
 	req := &sarama.CreateTopicsRequest{
 		TopicDetails: map[string]*sarama.TopicDetail{
 			t.Name: {
 				NumPartitions:     t.Partitions,
-				ReplicationFactor: replicationFactor,
+				ReplicationFactor: t.ReplicationFactor,
 				ConfigEntries:     t.Config,
 			},
 		},
@@ -560,12 +553,6 @@ func (client *Client) ReadTopic(name string, refreshMetadata bool) (Topic, error
 
 			log.Printf("[TRACE] [%s] Config %v from Kafka", name, strPtrMapToStrMap(configToSave))
 			topic.Config = configToSave
-
-			_, ok := configToSave["confluent.placement.constraints"]
-			if ok {
-				log.Printf("[TRACE] Topic %s has placement constraints. Ignoring replication factor.", name)
-				topic.ReplicationFactor = -1
-			}
 
 			return topic, nil
 		}
